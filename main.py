@@ -1,20 +1,22 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from langchain_community.document_loaders import DirectoryLoader
 from langchain_community.vectorstores import Chroma
 from langchain_community.llms.ollama import Ollama
+from langchain.document_loaders.pdf import PyPDFDirectoryLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.prompts import ChatPromptTemplate
-from langchain.schema import Document
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_community.embeddings.bedrock import BedrockEmbeddings
+from langchain_community.embeddings.ollama import OllamaEmbeddings
+from langchain_community.llms.ollama import Ollama
 import uvicorn
-import argparse
 import shutil
 import os
+
 
 app = FastAPI()
 
 UPLOAD_DIR = "uploads"
 CHROMA_DIR = "chroma"
+
 
 PROMPT_TEMPLATE = """
 Answer the question based only on the following context:
@@ -26,15 +28,17 @@ Answer the question based only on the following context:
 Answer the question based on the above context: {question}
 """
 
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+embeddings = OllamaEmbeddings(model="nomic-embed-text")
 
 @app.post("/upload/")
 async def upload_pdf(file: UploadFile = File(...)):
     try:
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
         with open(os.path.join(UPLOAD_DIR, file.filename), "wb") as f:
             f.write(file.file.read())
 
-        loader = DirectoryLoader(UPLOAD_DIR)
+        loader = PyPDFDirectoryLoader(UPLOAD_DIR)
         doc = loader.load()
 
         store_embeddings_in_chroma(doc)
@@ -56,8 +60,9 @@ def store_embeddings_in_chroma(doc):
     document = chunks[10]
     print(document.page_content)
     print(document.metadata)
+    
     db = Chroma.from_documents(
-        chunks, OpenAIEmbeddings(), persist_directory=CHROMA_DIR
+        chunks, embeddings, persist_directory=CHROMA_DIR
     )
     db.persist()
     return {"Saved": f"{len(chunks)} chunks to {CHROMA_DIR}."}
@@ -92,8 +97,9 @@ async def test_question_validation(question: str, expected_response: str):
     
 def query_rag(query_text: str):
 
-    db = Chroma(persist_directory=CHROMA_DIR, embedding_function = OpenAIEmbeddings())
+    db = Chroma(persist_directory=CHROMA_DIR, embedding_function = embeddings)
     results = db.similarity_search_with_relevance_scores(query_text, k=3)
+    print("results --> ",results)
     if len(results) == 0 or results[0][1] < 0.7:
         return {"response": "Unable to find matching results."}
 
@@ -102,8 +108,8 @@ def query_rag(query_text: str):
     prompt = prompt_template.format(context=context_text, question=query_text)
     print(prompt)
 
-    model = ChatOpenAI()
-    response_text = model.predict(prompt)
+    model = Ollama(model="mistral")
+    response_text = model.invoke(prompt)
     return response_text
 
 def query_and_validate(query_text: str, expected_response: str):
